@@ -25,6 +25,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  packages: read   # gh attestation verify lee el manifest de la imagen en GHCR
 
 jobs:
   deploy:
