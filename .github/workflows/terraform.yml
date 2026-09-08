@@ -1,0 +1,77 @@
+# Reusable: plan en PR (comentado), apply solo desde main con environment aprobado.
+name: terraform
+
+on:
+  workflow_call:
+    inputs:
+      working-directory: { type: string, default: . }
+      environment: { type: string, required: true }
+      aws-region: { type: string, default: us-east-1 }
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write   # solo este job comenta en el PR
+    defaults: { run: { working-directory: "${{ inputs.working-directory }}" } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TF_PLAN_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+      - run: terraform init -input=false
+      - run: terraform fmt -check
+      - run: terraform validate
+      - id: plan
+        run: |
+          # -lock=false: el rol de plan es de solo lectura y no puede escribir el lock en DynamoDB
+          terraform plan -no-color -input=false -lock=false -out=tfplan | tee plan.txt
+          echo "changes=$(grep -cE '^\s+[+~-]' plan.txt || true)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}
+          path: ${{ inputs.working-directory }}/tfplan
+          retention-days: 1
+      - if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const dir = '${{ inputs.working-directory }}';
+            const plan = fs.readFileSync(`${dir}/plan.txt`, 'utf8').slice(0, 60000);
+            const body = `### Terraform plan · ${{ inputs.environment }}\n<details><summary>Ver plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
+            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number });
+            const prev = comments.find(c => c.body.startsWith('### Terraform plan · ${{ inputs.environment }}'));
+            if (prev) await github.rest.issues.updateComment({ ...context.repo, comment_id: prev.id, body });
+            else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+
+  apply:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: tf-apply-${{ inputs.environment }}
+      cancel-in-progress: false
+    defaults: { run: { working-directory: "${{ inputs.working-directory }}" } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TF_APPLY_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}
+          path: ${{ inputs.working-directory }}
+      - run: terraform init -input=false
+      - run: terraform apply -input=false tfplan   # aplica exactamente lo revisado

@@ -1,0 +1,77 @@
+# Reusable: despliega un artefacto zip a AWS Lambda con versión inmutable + alias con canary.
+# El artefacto se construye una vez; staging y production reciben exactamente el mismo zip.
+name: deploy-lambda
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      artifact:
+        description: Nombre del artifact que contiene lambda.zip
+        type: string
+        required: true
+      canary-percent:
+        description: Porcentaje de tráfico al canary antes de promover (0 = sin canary)
+        type: number
+        default: 0
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}-${{ inputs.artifact }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+
+      - name: Verificar provenance del zip
+        run: gh attestation verify lambda.zip --owner "$OWNER"
+        env:
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Publicar versión inmutable
+        id: publish
+        run: |
+          aws lambda update-function-code --function-name "$FN" --zip-file fileb://lambda.zip --publish > out.json
+          echo "version=$(jq -r .Version out.json)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(jq -r .CodeSha256 out.json)" >> "$GITHUB_OUTPUT"
+          aws lambda wait function-updated --function-name "$FN"
+        env:
+          FN: ${{ vars.LAMBDA_FUNCTION }}
+
+      - name: Canary en el alias
+        if: inputs.canary-percent > 0
+        run: |
+          aws lambda update-alias --function-name "$FN" --name live \
+            --routing-config "AdditionalVersionWeights={\"$VERSION\"=$PCT}"
+          sleep 60   # aquí van las alarmas de CloudWatch en un caso real
+          aws cloudwatch describe-alarms --alarm-names "$FN-errors" --state-value ALARM --query 'MetricAlarms[].AlarmName' --output text | grep -q . && { echo "alarma activa, abortando"; exit 1; } || true
+        env:
+          FN: ${{ vars.LAMBDA_FUNCTION }}
+          VERSION: ${{ steps.publish.outputs.version }}
+          PCT: ${{ inputs.canary-percent }}
+
+      - name: Promover alias al 100 %
+        run: |
+          aws lambda update-alias --function-name "$FN" --name live \
+            --function-version "$VERSION" --routing-config '{}'
+          echo "Desplegado $FN versión $VERSION (sha256 $SHA)"
+        env:
+          FN: ${{ vars.LAMBDA_FUNCTION }}
+          VERSION: ${{ steps.publish.outputs.version }}
+          SHA: ${{ steps.publish.outputs.sha256 }}

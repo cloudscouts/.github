@@ -1,0 +1,4 @@
+# Todo cambio a los workflows reutilizables requiere aprobación de plataforma.
+# En una org real sería un team (@cloudscouts/platform); en la demo, el owner.
+/.github/workflows/   @parraletz
+/workflow-templates/  @parraletz

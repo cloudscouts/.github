@@ -1,0 +1,6 @@
+{
+  "name": "Acme service CI",
+  "description": "Tests + build de imagen con el estándar de plataforma",
+  "iconName": "acme",
+  "categories": ["Node", "Docker"]
+}

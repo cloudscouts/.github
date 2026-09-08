@@ -1,0 +1,82 @@
+# Reusable: despliega un digest a Kubernetes (EKS) con Helm en un environment.
+# La estrategia de rollout (rolling, canary con Argo Rollouts) vive en el chart; los callers no cambian.
+name: deploy-k8s
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image:
+        type: string
+        required: true
+      digest:
+        type: string
+        required: true
+      chart:
+        description: Ruta del chart dentro del repo del servicio
+        type: string
+        default: chart
+      release:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.APP_URL }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}-${{ inputs.release }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verificar provenance antes de desplegar
+        run: gh attestation verify "oci://$IMAGE@$DIGEST" --owner "$OWNER"
+        env:
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ inputs.digest }}
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}   # variable del environment
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: kubeconfig (EKS access entry mapeado al rol OIDC)
+        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$REGION"
+        env:
+          CLUSTER: ${{ vars.EKS_CLUSTER }}
+          REGION: ${{ vars.AWS_REGION }}
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Helm upgrade con el digest inmutable
+        run: |
+          helm upgrade --install "$RELEASE" "$CHART" \
+            --namespace "$NAMESPACE" --create-namespace \
+            --values "$CHART/values-$ENVIRONMENT.yaml" \
+            --set image.repository="$IMAGE" \
+            --set image.digest="$DIGEST" \
+            --atomic --timeout 5m
+        env:
+          RELEASE: ${{ inputs.release }}
+          CHART: ${{ inputs.chart }}
+          NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ inputs.digest }}
+
+      - name: Smoke test
+        if: vars.APP_URL != ''
+        run: curl -fsS "$URL/health"
+        env:
+          URL: ${{ vars.APP_URL }}

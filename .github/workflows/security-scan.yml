@@ -1,0 +1,20 @@
+# Reusable pensado como required workflow vía ruleset de organización.
+name: security-scan
+on:
+  workflow_call:
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with: { languages: javascript-typescript }
+      - uses: github/codeql-action/analyze@v3
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: fs
+          severity: CRITICAL,HIGH
+          exit-code: "1"

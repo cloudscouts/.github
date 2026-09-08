@@ -1,0 +1,22 @@
+# Template: aparece en "New workflow" para todos los repos de la org
+name: service-ci
+on:
+  pull_request:
+  push:
+    branches: [$default-branch]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "agrega aquí los tests del servicio"
+  image:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    uses: cloudscouts/.github/.github/workflows/build-push.yml@v1
+    with:
+      context: .
+      image: ${{ github.event.repository.name }}
+    secrets: inherit
