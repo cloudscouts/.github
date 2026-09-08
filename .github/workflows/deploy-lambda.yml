@@ -57,8 +57,10 @@ jobs:
       - name: Canary en el alias
         if: inputs.canary-percent > 0
         run: |
+          # El peso es una fracción (10 % = 0.1); JSON explícito, el shorthand no acepta claves numéricas
+          weight=$(awk "BEGIN { print $PCT / 100 }")
           aws lambda update-alias --function-name "$FN" --name live \
-            --routing-config "AdditionalVersionWeights={\"$VERSION\"=$PCT}"
+            --routing-config "{\"AdditionalVersionWeights\":{\"$VERSION\":$weight}}"
           sleep 60   # aquí van las alarmas de CloudWatch en un caso real
           aws cloudwatch describe-alarms --alarm-names "$FN-errors" --state-value ALARM --query 'MetricAlarms[].AlarmName' --output text | grep -q . && { echo "alarma activa, abortando"; exit 1; } || true
         env:
